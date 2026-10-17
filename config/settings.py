@@ -96,6 +96,16 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
 KAFKA_LOCATION_TOPIC = os.getenv('KAFKA_LOCATION_TOPIC', 'driver-locations')
 KAFKA_CONSUMER_GROUP = os.getenv('KAFKA_CONSUMER_GROUP', 'dispatch-location-consumer-group')
 
+# Redis Configuration
+REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+REDIS_LOCATIONS_KEY = 'drivers:locations'
+REDIS_DRIVER_KEY_PREFIX = 'driver:'
+
+# Batch DB Flusher Settings
+BATCH_FLUSH_INTERVAL_SECONDS = 30.0
+BATCH_FLUSH_SIZE = 500
+
 if platform.system() == 'Windows':
     osgeo4w_path = Path(r'C:\OSGeo4W')
     if osgeo4w_path.exists():
