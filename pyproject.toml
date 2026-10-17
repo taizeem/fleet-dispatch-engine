@@ -1,0 +1,25 @@
+[project]
+name = "fleet-dispatch-engine"
+version = "0.1.0"
+description = "Geo-Spatial Fleet Dispatch Engine"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "django>=5.0,<5.1",
+    "djangorestframework>=3.15.1",
+    "djangorestframework-gis>=1.1.0",
+    "psycopg[binary]>=3.1.18",
+    "redis>=5.0.3",
+    "confluent-kafka>=2.3.0",
+    "channels>=4.1.0",
+    "channels-redis>=4.2.0",
+    "daphne>=4.1.0",
+    "python-dotenv>=1.2.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1.1",
+    "pytest-django>=4.8.0",
+    "factory-boy>=3.3.0",
+]

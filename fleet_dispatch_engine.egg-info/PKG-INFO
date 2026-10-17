@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: fleet-dispatch-engine
+Version: 0.1.0
+Summary: Geo-Spatial Fleet Dispatch Engine
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: django<5.1,>=5.0
+Requires-Dist: djangorestframework>=3.15.1
+Requires-Dist: djangorestframework-gis>=1.1.0
+Requires-Dist: psycopg[binary]>=3.1.18
+Requires-Dist: redis>=5.0.3
+Requires-Dist: confluent-kafka>=2.3.0
+Requires-Dist: channels>=4.1.0
+Requires-Dist: channels-redis>=4.2.0
+Requires-Dist: daphne>=4.1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.1.1; extra == "dev"
+Requires-Dist: pytest-django>=4.8.0; extra == "dev"
+Requires-Dist: factory-boy>=3.3.0; extra == "dev"
