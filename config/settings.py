@@ -91,18 +91,20 @@ REST_FRAMEWORK = {
     ],
 }
 
+# Kafka Configuration
+KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+KAFKA_LOCATION_TOPIC = os.getenv('KAFKA_LOCATION_TOPIC', 'driver-locations')
+KAFKA_CONSUMER_GROUP = os.getenv('KAFKA_CONSUMER_GROUP', 'dispatch-location-consumer-group')
+
 if platform.system() == 'Windows':
-    osgeo4w_path = Path(r'C:\Users\LENOVO\AppData\Local\Programs\OSGeo4W')
+    osgeo4w_path = Path(r'C:\OSGeo4W')
     if osgeo4w_path.exists():
         bin_path = str(osgeo4w_path / 'bin')
         if bin_path not in os.environ['PATH']:
             os.environ['PATH'] = bin_path + ';' + os.environ['PATH']
-
-        # Find the installed gdal DLL (e.g. gdal308.dll or gdal309.dll)
         gdal_dlls = list((osgeo4w_path / 'bin').glob('gdal*.dll'))
         if gdal_dlls:
             GDAL_LIBRARY_PATH = str(gdal_dlls[0])
-
         geos_dll = osgeo4w_path / 'bin' / 'geos_c.dll'
         if geos_dll.exists():
             GEOS_LIBRARY_PATH = str(geos_dll)
