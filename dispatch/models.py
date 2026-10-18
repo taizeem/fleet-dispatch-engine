@@ -17,6 +17,7 @@ class DriverStatus(models.TextChoices):
 class RideRequestStatus(models.TextChoices):
     REQUESTED = 'requested', 'Requested'
     OFFERED = 'offered', 'Offered'
+    ASSIGNED = 'assigned', 'Assigned'
     ACCEPTED = 'accepted', 'Accepted'
     ARRIVED = 'arrived', 'Arrived'
     IN_PROGRESS = 'in_progress', 'In Progress'

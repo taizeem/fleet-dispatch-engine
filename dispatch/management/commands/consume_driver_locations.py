@@ -87,7 +87,6 @@ class Command(BaseCommand):
         lon = float(payload.get('longitude'))
         ts_str = payload.get('timestamp')
 
-        # 1. Update sub-millisecond coordinates in Redis Geospatial Index
         self.redis_service.update_driver_location(
             driver_id=driver_id,
             longitude=lon,
@@ -95,10 +94,8 @@ class Command(BaseCommand):
             timestamp_iso=ts_str,
         )
 
-        # 2. Check for active rides assigned to this driver and broadcast via WebSockets
         self.broadcast_driver_location_to_riders(driver_id, lat, lon, ts_str)
 
-        # 3. Buffer for PostGIS batch persistence
         recorded_at = timezone.now()
         if ts_str:
             try:
@@ -122,7 +119,12 @@ class Command(BaseCommand):
         active_ride_ids = list(
             RideRequest.objects.filter(
                 driver_id=driver_id,
-                status__in=[RideRequestStatus.ASSIGNED, RideRequestStatus.IN_PROGRESS],
+                status__in=[
+                    RideRequestStatus.ASSIGNED,
+                    RideRequestStatus.ACCEPTED,
+                    RideRequestStatus.ARRIVED,
+                    RideRequestStatus.IN_PROGRESS,
+                ],
             ).values_list('id', flat=True)
         )
 
@@ -141,11 +143,6 @@ class Command(BaseCommand):
             }
             try:
                 async_to_sync(self.channel_layer.group_send)(group_name, message_data)
-                self.stdout.write(
-                    self.style.NOTICE(
-                        f'[WS BROADCAST] Pushed live location of Driver {driver_id} to ride group "{group_name}" ({lat}, {lon})'
-                    )
-                )
             except Exception as e:
                 logger.error('Failed to broadcast driver location over channel layer: %s', e)
 

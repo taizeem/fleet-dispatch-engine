@@ -68,6 +68,7 @@ class RideRequestCreateView(APIView):
         response_data = RideRequestDetailSerializer(ride).data
         response_data['dispatch_strategy'] = strategy
         response_data['target_driver'] = str(target_driver.id) if target_driver else None
+        response_data['is_driver_assigned'] = target_driver is not None
 
         return Response(response_data, status=status.HTTP_201_CREATED)
 

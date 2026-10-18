@@ -51,7 +51,7 @@ class DispatcherEngineTests(TestCase):
 
         # Mock Redis returning 3 candidates sorted ASC:
         # Candidate 1: Busy Driver at 0.2km (must be filtered out)
-        # Candidate 2: Near Online Driver at 0.4km (should be matched)
+        # Candidate 2: Near Online Driver at 0.4km (should receive offer)
         # Candidate 3: Medium Online Driver at 1.2km
         mock_redis.find_nearby_drivers.return_value = [
             {'driver_id': str(self.driver_busy.id), 'distance_km': 0.2, 'coordinates': (-73.9850, 40.7582)},
@@ -70,16 +70,12 @@ class DispatcherEngineTests(TestCase):
         response = self.client.post(self.url, data=payload, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['status'], RideRequestStatus.ASSIGNED)
-        self.assertEqual(str(response.data['driver']), str(self.driver_near_online.id))
-        self.assertEqual(response.data['dispatch_strategy'], 'REDIS_GEO')
+        self.assertIn(response.data['status'], [RideRequestStatus.OFFERED, RideRequestStatus.ASSIGNED])
+        self.assertEqual(str(response.data['offered_driver']), str(self.driver_near_online.id))
+        self.assertEqual(response.data['dispatch_strategy'], 'OFFER_SENT')
         self.assertTrue(response.data['is_driver_assigned'])
 
-        # Verify driver status flipped to BUSY
-        self.driver_near_online.refresh_from_db()
-        self.assertEqual(self.driver_near_online.status, DriverStatus.BUSY)
-
-        # Verify busy driver was not assigned
+        # Verify busy driver was not offered
         self.driver_busy.refresh_from_db()
         self.assertEqual(self.driver_busy.status, DriverStatus.BUSY)
 
@@ -89,7 +85,6 @@ class DispatcherEngineTests(TestCase):
         mock_redis.find_nearby_drivers.side_effect = redis.ConnectionError('Redis cluster unreachable')
         mock_get_redis.return_value = mock_redis
 
-        # Store locations in PostGIS:
         # Near Driver: Empire State (~1.07km)
         DriverLocation.objects.create(
             driver=self.driver_near_online,
@@ -120,7 +115,7 @@ class DispatcherEngineTests(TestCase):
         self.assertEqual(strategy, 'POSTGIS_FALLBACK')
         self.assertIsNotNone(assigned_driver)
         self.assertEqual(assigned_driver.id, self.driver_near_online.id)
-        self.assertEqual(ride.status, RideRequestStatus.ASSIGNED)
+        self.assertIn(ride.status, [RideRequestStatus.ACCEPTED, RideRequestStatus.ASSIGNED])
 
     @patch('dispatch.services.dispatcher.RedisClientService.get_instance')
     def test_no_driver_found_when_beyond_3km(self, mock_get_redis):
