@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-load_dotenv(BASE_DIR / '.env')
+load_dotenv(BASE_DIR / '.env', override=False)
 
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'insecure-dev-key-change-in-prod')
 DEBUG = os.getenv('DJANGO_DEBUG', 'False').lower() in ('true', '1', 't')
@@ -14,6 +14,7 @@ ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
     'daphne',
+    'channels',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -63,7 +64,7 @@ DATABASES = {
         'NAME': os.getenv('POSTGRES_DB', 'dispatch_db'),
         'USER': os.getenv('POSTGRES_USER', 'dispatch_user'),
         'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'supersecret_dispatch_pass'),
-        'HOST': os.getenv('POSTGRES_HOST', 'localhost'),
+        'HOST': os.getenv('POSTGRES_HOST', '127.0.0.1'),
         'PORT': os.getenv('POSTGRES_PORT', '5435'),
     }
 }
@@ -92,7 +93,7 @@ REST_FRAMEWORK = {
 }
 
 # Kafka Configuration
-KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', '127.0.0.1:9092')
 KAFKA_LOCATION_TOPIC = os.getenv('KAFKA_LOCATION_TOPIC', 'driver-locations')
 KAFKA_CONSUMER_GROUP = os.getenv('KAFKA_CONSUMER_GROUP', 'dispatch-location-consumer-group')
 
@@ -101,6 +102,16 @@ REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_LOCATIONS_KEY = 'drivers:locations'
 REDIS_DRIVER_KEY_PREFIX = 'driver:'
+
+# Redis Channel Layer for Django Channels WebSockets
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [(REDIS_HOST, REDIS_PORT)],
+        },
+    },
+}
 
 # Batch DB Flusher Settings
 BATCH_FLUSH_INTERVAL_SECONDS = 30.0

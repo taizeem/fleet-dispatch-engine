@@ -4,24 +4,28 @@ import signal
 import sys
 import time
 from datetime import datetime
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from confluent_kafka import Consumer, KafkaError
 from django.conf import settings
 from django.contrib.gis.geos import Point
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from dispatch.models import DriverLocation
+
+from dispatch.models import DriverLocation, RideRequest, RideRequestStatus
 from dispatch.redis_client import RedisClientService
 
 logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = 'Consumes driver location pings from Kafka, updates Redis GEO index, and batch inserts to PostGIS.'
+    help = 'Consumes driver location pings from Kafka, updates Redis GEO, broadcasts to WebSockets, and batch-inserts to PostGIS.'
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.running = True
         self.redis_service = RedisClientService.get_instance()
+        self.channel_layer = get_channel_layer()
         self.location_buffer = []
         self.last_flush_time = time.time()
         self.flush_interval = settings.BATCH_FLUSH_INTERVAL_SECONDS
@@ -47,15 +51,13 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                f'Started Kafka Consumer for topic "{settings.KAFKA_LOCATION_TOPIC}" with Redis GEO update & PostGIS batching (Interval: {self.flush_interval}s, Size: {self.batch_size})...'
+                f'Started Kafka Consumer for topic "{settings.KAFKA_LOCATION_TOPIC}" with WebSocket live streaming...'
             )
         )
 
         try:
             while self.running:
                 msg = consumer.poll(timeout=1.0)
-
-                # Check if periodic flush time interval reached even when idle
                 self.check_periodic_flush()
 
                 if msg is None:
@@ -80,12 +82,12 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS('Consumer stopped and all buffers flushed cleanly.'))
 
     def process_location_ping(self, payload: dict):
-        driver_id = payload.get('driver_id')
+        driver_id = str(payload.get('driver_id'))
         lat = float(payload.get('latitude'))
         lon = float(payload.get('longitude'))
         ts_str = payload.get('timestamp')
 
-        # 1. Real-Time State: Sub-millisecond write to Redis Geospatial Index
+        # 1. Update sub-millisecond coordinates in Redis Geospatial Index
         self.redis_service.update_driver_location(
             driver_id=driver_id,
             longitude=lon,
@@ -93,7 +95,10 @@ class Command(BaseCommand):
             timestamp_iso=ts_str,
         )
 
-        # Parse timestamp or default to now
+        # 2. Check for active rides assigned to this driver and broadcast via WebSockets
+        self.broadcast_driver_location_to_riders(driver_id, lat, lon, ts_str)
+
+        # 3. Buffer for PostGIS batch persistence
         recorded_at = timezone.now()
         if ts_str:
             try:
@@ -103,7 +108,6 @@ class Command(BaseCommand):
             except ValueError:
                 recorded_at = timezone.now()
 
-        # 2. Append to batch buffer for PostGIS
         location_obj = DriverLocation(
             driver_id=driver_id,
             location=Point(lon, lat, srid=4326),
@@ -111,13 +115,39 @@ class Command(BaseCommand):
         )
         self.location_buffer.append(location_obj)
 
-        self.stdout.write(
-            f'[PING PROCESSED] Driver {driver_id} updated in Redis GEO. Buffer size: {len(self.location_buffer)}/{self.batch_size}'
-        )
-
-        # Flush if batch size limit reached
         if len(self.location_buffer) >= self.batch_size:
             self.flush_buffer()
+
+    def broadcast_driver_location_to_riders(self, driver_id: str, lat: float, lon: float, ts_str: str):
+        active_ride_ids = list(
+            RideRequest.objects.filter(
+                driver_id=driver_id,
+                status__in=[RideRequestStatus.ASSIGNED, RideRequestStatus.IN_PROGRESS],
+            ).values_list('id', flat=True)
+        )
+
+        for ride_id in active_ride_ids:
+            group_name = f'ride_{ride_id}'
+            message_data = {
+                'type': 'driver_location_update',
+                'data': {
+                    'type': 'driver_location',
+                    'ride_id': str(ride_id),
+                    'driver_id': str(driver_id),
+                    'latitude': lat,
+                    'longitude': lon,
+                    'timestamp': ts_str or timezone.now().isoformat(),
+                },
+            }
+            try:
+                async_to_sync(self.channel_layer.group_send)(group_name, message_data)
+                self.stdout.write(
+                    self.style.NOTICE(
+                        f'[WS BROADCAST] Pushed live location of Driver {driver_id} to ride group "{group_name}" ({lat}, {lon})'
+                    )
+                )
+            except Exception as e:
+                logger.error('Failed to broadcast driver location over channel layer: %s', e)
 
     def check_periodic_flush(self):
         current_time = time.time()

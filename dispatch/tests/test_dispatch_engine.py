@@ -71,7 +71,7 @@ class DispatcherEngineTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['status'], RideRequestStatus.ASSIGNED)
-        self.assertEqual(response.data['driver'], str(self.driver_near_online.id))
+        self.assertEqual(str(response.data['driver']), str(self.driver_near_online.id))
         self.assertEqual(response.data['dispatch_strategy'], 'REDIS_GEO')
         self.assertTrue(response.data['is_driver_assigned'])
 
@@ -86,7 +86,6 @@ class DispatcherEngineTests(TestCase):
     @patch('dispatch.services.dispatcher.RedisClientService.get_instance')
     def test_postgis_fallback_when_redis_fails(self, mock_get_redis):
         mock_redis = MagicMock()
-        # Simulate Redis network outage
         mock_redis.find_nearby_drivers.side_effect = redis.ConnectionError('Redis cluster unreachable')
         mock_get_redis.return_value = mock_redis
 
@@ -126,7 +125,6 @@ class DispatcherEngineTests(TestCase):
     @patch('dispatch.services.dispatcher.RedisClientService.get_instance')
     def test_no_driver_found_when_beyond_3km(self, mock_get_redis):
         mock_redis = MagicMock()
-        # Redis finds no drivers within 3km
         mock_redis.find_nearby_drivers.return_value = []
         mock_get_redis.return_value = mock_redis
 
