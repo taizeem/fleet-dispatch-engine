@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.contrib.gis.geos import Point
+from django.views.generic import TemplateView
 
 from .models import RideRequest, RideRequestStatus
 from .serializers import (
@@ -16,6 +17,9 @@ from .kafka_producer import KafkaProducerService
 from .services.dispatcher import DispatcherService
 from .services.lifecycle import RideLifecycleService
 
+
+class DashboardView(TemplateView):
+    template_name = 'dispatch/dashboard.html'
 
 class DriverLocationPingView(APIView):
     def post(self, request, *args, **kwargs):

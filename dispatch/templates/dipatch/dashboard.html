@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geo-Spatial Fleet Dispatch | Live Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        body { display: flex; height: 100vh; overflow: hidden; background: #0f172a; color: #f8fafc; }
+        #sidebar { width: 380px; background: #1e293b; padding: 24px; display: flex; flex-direction: column; gap: 16px; border-right: 1px solid #334155; z-index: 1000; overflow-y: auto; }
+        #map { flex: 1; height: 100%; background: #0b1120; }
+        h1 { font-size: 20px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 8px; }
+        .subtitle { font-size: 12px; color: #94a3b8; }
+        .card { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+        .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; }
+        label { font-size: 12px; color: #cbd5e1; display: flex; justify-content: space-between; }
+        input { width: 100%; padding: 8px 12px; background: #1e293b; border: 1px solid #475569; border-radius: 6px; color: #fff; font-size: 13px; margin-top: 4px; }
+        button { background: #0284c7; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: background 0.2s; font-size: 14px; }
+        button:hover { background: #0369a1; }
+        button:disabled { background: #475569; cursor: not-allowed; }
+        .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: 600; width: fit-content; text-transform: uppercase; }
+        .status-idle { background: #334155; color: #94a3b8; }
+        .status-offered { background: #854d0e; color: #fef08a; }
+        .status-accepted { background: #166534; color: #bbf7d0; }
+        .status-in_progress { background: #1e40af; color: #bfdbfe; }
+        .status-completed { background: #047857; color: #a7f3d0; }
+        .log-box { background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; height: 160px; overflow-y: auto; color: #a5f3fc; }
+        .otp-display { font-size: 26px; font-weight: 800; letter-spacing: 4px; color: #facc15; text-align: center; background: #1e293b; border-radius: 6px; padding: 8px; border: 1px dashed #ca8a04; }
+        .car-marker { font-size: 28px; line-height: 1; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); transition: transform 0.3s linear; }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div>
+            <h1><span>⚡</span> Fleet Dispatch</h1>
+            <p class="subtitle">Real-Time Geo-Spatial Ride Tracking</p>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Ride Controls</div>
+            <div>
+                <label>Rider ID</label>
+                <input id="riderId" type="text" value="b2222222-2222-2222-2222-222222222222" />
+            </div>
+            <div>
+                <label>Pickup Location (Lat, Lon)</label>
+                <input id="pickupCoords" type="text" value="40.7580, -73.9855" />
+            </div>
+            <div>
+                <label>Dropoff Location (Lat, Lon)</label>
+                <input id="dropoffCoords" type="text" value="40.7660, -73.9760" />
+            </div>
+            <button id="btnRequest" onclick="requestRide()">Request Live Ride</button>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Trip Status</div>
+            <div id="statusBadge" class="status-badge status-idle">IDLE</div>
+            <div id="otpContainer" style="display: none;">
+                <label>Rider Security OTP</label>
+                <div id="otpValue" class="otp-display">----</div>
+            </div>
+            <div id="receiptContainer" style="display: none;">
+                <label>Fare Receipt</label>
+                <div style="font-size: 14px; font-weight: 600; color: #34d399;" id="receiptDetails"></div>
+            </div>
+        </div>
+
+        <div class="card" style="flex: 1;">
+            <div class="card-title">Live WebSocket Events</div>
+            <div id="logBox" class="log-box">Waiting to dispatch ride...</div>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Default center: Times Square
+        const map = L.map('map').setView([40.7580, -73.9855], 14);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+            maxZoom: 19
+        }).addTo(map);
+
+        let pickupMarker = null;
+        let dropoffMarker = null;
+        let vehicleMarker = null;
+        let activeSocket = null;
+
+        function log(msg) {
+            const box = document.getElementById('logBox');
+            const time = new Date().toLocaleTimeString();
+            box.innerHTML = `[${time}] ${msg}<br/>` + box.innerHTML;
+        }
+
+        function setStatus(status) {
+            const badge = document.getElementById('statusBadge');
+            badge.className = `status-badge status-${status.toLowerCase()}`;
+            badge.innerText = status.replace('_', ' ');
+        }
+
+        async function requestRide() {
+            const riderId = document.getElementById('riderId').value.trim();
+            const [pLat, pLon] = document.getElementById('pickupCoords').value.split(',').map(s => parseFloat(s.trim()));
+            const [dLat, dLon] = document.getElementById('dropoffCoords').value.split(',').map(s => parseFloat(s.trim()));
+
+            // Update map pins
+            if (pickupMarker) map.removeLayer(pickupMarker);
+            if (dropoffMarker) map.removeLayer(dropoffMarker);
+
+            pickupMarker = L.marker([pLat, pLon]).addTo(map).bindPopup('<b>Pickup</b>').openPopup();
+            dropoffMarker = L.marker([dLat, dLon]).addTo(map).bindPopup('<b>Dropoff</b>');
+            map.fitBounds([ [pLat, pLon], [dLat, dLon] ], { padding: [50, 50] });
+
+            document.getElementById('btnRequest').disabled = true;
+            log('Sending POST /api/v1/rides/request/...');
+
+            try {
+                const response = await fetch('/api/v1/rides/request/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        rider_id: riderId,
+                        pickup_latitude: pLat,
+                        pickup_longitude: pLon,
+                        dropoff_latitude: dLat,
+                        dropoff_longitude: dLon
+                    })
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    log('Error creating ride: ' + JSON.stringify(data));
+                    document.getElementById('btnRequest').disabled = false;
+                    return;
+                }
+
+                log(`Ride created (${data.id}). Offered to driver: ${data.target_driver}`);
+                setStatus(data.status);
+                connectWebSocket(data.id);
+            } catch (err) {
+                log('Network error: ' + err.message);
+                document.getElementById('btnRequest').disabled = false;
+            }
+        }
+
+        function connectWebSocket(rideId) {
+            if (activeSocket) activeSocket.close();
+
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            const wsUrl = `${protocol}${window.location.host}/ws/rides/${rideId}/`;
+            log(`Opening WebSocket connection: ${wsUrl}`);
+
+            activeSocket = new WebSocket(wsUrl);
+
+            activeSocket.onopen = () => {
+                log('WebSocket connected. Listening for live driver tracking...');
+            };
+
+            activeSocket.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                handleStreamEvent(msg);
+            };
+
+            activeSocket.onerror = (error) => {
+                log('WebSocket error occurred.');
+            };
+
+            activeSocket.onclose = () => {
+                log('WebSocket disconnected.');
+            };
+        }
+
+        function handleStreamEvent(msg) {
+            switch(msg.type) {
+                case 'connection_established':
+                    log(msg.message);
+                    break;
+
+                case 'driver_accepted':
+                    setStatus('ACCEPTED');
+                    document.getElementById('otpContainer').style.display = 'block';
+                    document.getElementById('otpValue').innerText = msg.otp;
+                    log(`Driver accepted! Security OTP: ${msg.otp}`);
+                    break;
+
+                case 'driver_location':
+                    updateVehiclePosition(msg.latitude, msg.longitude);
+                    break;
+
+                case 'driver_arrived':
+                    setStatus('ARRIVED');
+                    log(msg.message);
+                    break;
+
+                case 'trip_started':
+                    setStatus('IN_PROGRESS');
+                    log(msg.message);
+                    break;
+
+                case 'trip_completed':
+                    setStatus('COMPLETED');
+                    document.getElementById('receiptContainer').style.display = 'block';
+                    document.getElementById('receiptDetails').innerText = `${msg.distance_km} km • $${msg.fare_amount.toFixed(2)}`;
+                    log(msg.message);
+                    document.getElementById('btnRequest').disabled = false;
+                    break;
+
+                default:
+                    log(JSON.stringify(msg));
+            }
+        }
+
+        function updateVehiclePosition(lat, lon) {
+            if (!vehicleMarker) {
+                const carIcon = L.divIcon({
+                    className: 'car-marker',
+                    html: '🚗',
+                    iconSize: [32, 32],
+                    iconAnchor: [16, 16]
+                });
+                vehicleMarker = L.marker([lat, lon], { icon: carIcon }).addTo(map);
+                log(`Car marker initialized at (${lat.toFixed(4)}, ${lon.toFixed(4)})`);
+            } else {
+                vehicleMarker.setLatLng([lat, lon]);
+            }
+        }
+    </script>
+</body>
+</html>
