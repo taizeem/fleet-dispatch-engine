@@ -62,6 +62,8 @@ class RideRequestDetailSerializer(serializers.ModelSerializer):
             'status',
             'otp',
             'distance_km',
+            'estimated_duration_minutes',
+            'route_geojson',
             'fare_amount',
             'pickup_coordinates',
             'dropoff_coordinates',

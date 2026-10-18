@@ -11,6 +11,7 @@ import redis
 
 from dispatch.models import Driver, DriverStatus, DriverLocation, RideRequest, RideRequestStatus
 from dispatch.redis_client import RedisClientService
+from dispatch.services.routing import RoutingService
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class DispatcherService:
 
     def __init__(self):
         self.redis_service = RedisClientService.get_instance()
+        self.routing_service = RoutingService()
         self.channel_layer = get_channel_layer()
 
     def dispatch_ride(self, ride_request_id: str) -> Tuple[RideRequest, Optional[Driver], str]:
@@ -30,10 +32,23 @@ class DispatcherService:
             return ride, ride.driver, 'ALREADY_ASSIGNED'
 
         pickup_point = ride.pickup_location
+        dropoff_point = ride.dropoff_location
         pickup_lon = pickup_point.x
         pickup_lat = pickup_point.y
 
-        # 1. Fetch nearby candidates from Redis GEO
+        # 1. Calculate road trip distance, duration, and geometry
+        trip_route = self.routing_service.get_driving_route(
+            start_lat=pickup_lat,
+            start_lon=pickup_lon,
+            end_lat=dropoff_point.y,
+            end_lon=dropoff_point.x,
+        )
+        ride.distance_km = trip_route['distance_km']
+        ride.estimated_duration_minutes = trip_route['duration_minutes']
+        ride.route_geojson = trip_route['coordinates']
+        ride.save(update_fields=['distance_km', 'estimated_duration_minutes', 'route_geojson', 'updated_at'])
+
+        # 2. Fetch candidate drivers from Redis GEO
         candidates: List[dict] = []
         try:
             candidates = self.redis_service.find_nearby_drivers(
@@ -45,11 +60,10 @@ class DispatcherService:
         except (redis.RedisError, Exception) as exc:
             logger.warning('Redis geospatial search failed: %s', exc)
 
-        # 2. Fallback to PostGIS if Redis returned zero candidates or threw error
         if not candidates:
             return self._dispatch_postgis_fallback(ride, pickup_point)
 
-        # 3. Filter candidates to ensure they are confirmed ONLINE in database
+        # 3. Filter candidates for online status
         candidate_ids = [c['driver_id'] for c in candidates]
         online_driver_ids = set(
             Driver.objects.filter(id__in=candidate_ids, status=DriverStatus.ONLINE)
@@ -60,7 +74,21 @@ class DispatcherService:
         if not online_candidates:
             return self._dispatch_postgis_fallback(ride, pickup_point)
 
-        # 4. Initiate 15-second Offer Cascade starting with the closest candidate
+        # 4. Rank candidates by Driving ETA (Road Travel Time) to Pickup
+        for cand in online_candidates:
+            d_lon, d_lat = cand['coordinates']
+            route_to_pickup = self.routing_service.get_driving_route(
+                start_lat=d_lat,
+                start_lon=d_lon,
+                end_lat=pickup_lat,
+                end_lon=pickup_lon,
+            )
+            cand['eta_minutes'] = route_to_pickup['duration_minutes']
+            cand['road_distance_km'] = route_to_pickup['distance_km']
+
+        online_candidates.sort(key=lambda x: x.get('eta_minutes', x['distance_km']))
+
+        # 5. Initiate Offer Cascade to the candidate with fastest arrival ETA
         return self._offer_to_next_candidate(ride, online_candidates, current_index=0)
 
     def _offer_to_next_candidate(self, ride: RideRequest, candidates: list, current_index: int) -> Tuple[RideRequest, Optional[Driver], str]:
@@ -75,7 +103,6 @@ class DispatcherService:
 
         driver = Driver.objects.filter(id=target_driver_id, status=DriverStatus.ONLINE).first()
         if not driver:
-            # Skip driver if they went offline/busy between search and offer
             return self._offer_to_next_candidate(ride, candidates, current_index + 1)
 
         with transaction.atomic():
@@ -83,7 +110,6 @@ class DispatcherService:
             ride.status = RideRequestStatus.OFFERED
             ride.save(update_fields=['offered_driver', 'status', 'updated_at'])
 
-        # Store offer state in Redis with a 15-second TTL
         offer_key = f'ride:{ride.id}:offer'
         offer_data = {
             'ride_id': str(ride.id),
@@ -97,15 +123,13 @@ class DispatcherService:
             json.dumps(offer_data),
         )
 
-        # Broadcast offer event to the Driver's WebSocket channel group
-        self._broadcast_driver_offer(ride, driver, target_candidate['distance_km'])
+        eta = target_candidate.get('eta_minutes', 3.0)
+        dist = target_candidate.get('road_distance_km', target_candidate['distance_km'])
+        self._broadcast_driver_offer(ride, driver, dist, eta)
 
         return ride, driver, 'OFFER_SENT'
 
     def cascade_next_driver(self, ride_request_id: str) -> Tuple[RideRequest, Optional[Driver], str]:
-        """
-        Called when a driver explicitly declines or an offer times out.
-        """
         ride = RideRequest.objects.get(id=ride_request_id)
         if ride.status != RideRequestStatus.OFFERED:
             return ride, ride.driver, 'ALREADY_HANDLED'
@@ -114,7 +138,6 @@ class DispatcherService:
         raw_offer = self.redis_service.client.get(offer_key)
 
         if not raw_offer:
-            # Fallback to fresh dispatch if offer cache was evicted
             return self.dispatch_ride(str(ride.id))
 
         offer_data = json.loads(raw_offer)
@@ -123,7 +146,7 @@ class DispatcherService:
 
         return self._offer_to_next_candidate(ride, candidates, next_index)
 
-    def _broadcast_driver_offer(self, ride: RideRequest, driver: Driver, distance_km: float):
+    def _broadcast_driver_offer(self, ride: RideRequest, driver: Driver, distance_km: float, eta_minutes: float):
         group_name = f'driver_{driver.id}'
         message = {
             'type': 'driver_offer',
@@ -134,6 +157,7 @@ class DispatcherService:
                 'pickup_coordinates': {'lat': ride.pickup_location.y, 'lon': ride.pickup_location.x},
                 'dropoff_coordinates': {'lat': ride.dropoff_location.y, 'lon': ride.dropoff_location.x},
                 'distance_to_pickup_km': round(distance_km, 2),
+                'eta_minutes': round(eta_minutes, 1),
                 'timeout_seconds': self.OFFER_TIMEOUT_SECONDS,
             },
         }

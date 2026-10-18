@@ -30,6 +30,7 @@
         .status-arrived { background: #0891b2; color: #cffafe; }
         .status-in_progress { background: #1e40af; color: #bfdbfe; }
         .status-completed { background: #047857; color: #a7f3d0; }
+        .route-info { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #38bdf8; background: #0284c720; padding: 8px 12px; border-radius: 6px; border: 1px solid #0284c740; }
         .log-box { background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; height: 140px; overflow-y: auto; color: #a5f3fc; }
         .otp-display { font-size: 26px; font-weight: 800; letter-spacing: 4px; color: #facc15; text-align: center; background: #1e293b; border-radius: 6px; padding: 8px; border: 1px dashed #ca8a04; }
         .car-marker {
@@ -51,7 +52,7 @@
     <div id="sidebar">
         <div>
             <h1><span>⚡</span> Fleet Dispatch</h1>
-            <p class="subtitle">Real-Time Geo-Spatial Ride Tracking</p>
+            <p class="subtitle">OSRM Street-Network Routing & Real-Time Tracking</p>
         </div>
 
         <div class="card">
@@ -72,8 +73,14 @@
         </div>
 
         <div class="card">
-            <div class="card-title">Trip Status</div>
-            <div id="statusBadge" class="status-badge status-idle">IDLE</div>
+            <div class="card-title">Trip Status & Road ETA</div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div id="statusBadge" class="status-badge status-idle">IDLE</div>
+            </div>
+            <div id="routeInfoBox" class="route-info" style="display: none;">
+                <span id="routeDistance">0.0 km</span>
+                <span id="routeDuration">0.0 mins ETA</span>
+            </div>
             <div id="otpContainer" style="display: none;">
                 <label>Rider Security OTP (Boarding Code)</label>
                 <div id="otpValue" class="otp-display">----</div>
@@ -112,7 +119,7 @@
         let pickupMarker = null;
         let dropoffMarker = null;
         let vehicleMarker = null;
-        let tripRouteLine = null;
+        let streetRouteLine = null;
         let activeSocket = null;
 
         let currentRideId = null;
@@ -138,27 +145,18 @@
 
             if (pickupMarker) map.removeLayer(pickupMarker);
             if (dropoffMarker) map.removeLayer(dropoffMarker);
-            if (tripRouteLine) map.removeLayer(tripRouteLine);
+            if (streetRouteLine) map.removeLayer(streetRouteLine);
             if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
 
             document.getElementById('otpContainer').style.display = 'none';
             document.getElementById('receiptContainer').style.display = 'none';
+            document.getElementById('routeInfoBox').style.display = 'none';
 
-            // Place Markers & Cyan Route Line
             pickupMarker = L.marker([pLat, pLon]).addTo(map).bindPopup('<b>📍 Pickup</b>').openPopup();
             dropoffMarker = L.marker([dLat, dLon]).addTo(map).bindPopup('<b>🏁 Dropoff</b>');
 
-            tripRouteLine = L.polyline([[pLat, pLon], [dLat, dLon]], {
-                color: '#38bdf8',
-                weight: 5,
-                opacity: 0.8,
-                dashArray: '8, 8'
-            }).addTo(map);
-
-            map.fitBounds(tripRouteLine.getBounds(), { padding: [60, 60] });
-
             document.getElementById('btnRequest').disabled = true;
-            log('Requesting new ride from API...');
+            log('Requesting ride with OSRM street-network routing...');
 
             try {
                 const response = await fetch('/api/v1/rides/request/', {
@@ -183,7 +181,26 @@
                 currentRideId = data.id;
                 currentDriverId = data.target_driver;
 
-                log(`Ride created (${data.id}). Offered to driver: ${data.target_driver}`);
+                // Render Street-Snapped Polyline from OSRM
+                if (data.route_geojson && data.route_geojson.length > 0) {
+                    streetRouteLine = L.polyline(data.route_geojson, {
+                        color: '#0284c7',
+                        weight: 6,
+                        opacity: 0.9,
+                        lineCap: 'round',
+                        lineJoin: 'round'
+                    }).addTo(map);
+                    map.fitBounds(streetRouteLine.getBounds(), { padding: [60, 60] });
+                }
+
+                // Show Driving Distance & Duration
+                if (data.distance_km && data.estimated_duration_minutes) {
+                    document.getElementById('routeInfoBox').style.display = 'flex';
+                    document.getElementById('routeDistance').innerText = `🛣️ ${data.distance_km} km`;
+                    document.getElementById('routeDuration').innerText = `⏱️ ${data.estimated_duration_minutes} mins ETA`;
+                }
+
+                log(`Ride created! Distance: ${data.distance_km}km, ETA: ${data.estimated_duration_minutes} mins.`);
                 setStatus(data.status);
 
                 // Show Driver Actions Card
