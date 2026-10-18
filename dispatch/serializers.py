@@ -5,20 +5,9 @@ from .models import RideRequest, Driver, Rider, RideRequestStatus
 
 class DriverLocationPingSerializer(serializers.Serializer):
     driver_id = serializers.UUIDField(required=True)
-    latitude = serializers.FloatField(
-        required=True,
-        min_value=-90.0,
-        max_value=90.0,
-    )
-    longitude = serializers.FloatField(
-        required=True,
-        min_value=-180.0,
-        max_value=180.0,
-    )
-    timestamp = serializers.DateTimeField(
-        required=False,
-        default=timezone.now,
-    )
+    latitude = serializers.FloatField(required=True, min_value=-90.0, max_value=90.0)
+    longitude = serializers.FloatField(required=True, min_value=-180.0, max_value=180.0)
+    timestamp = serializers.DateTimeField(required=False, default=timezone.now)
 
     def validate(self, attrs):
         attrs['timestamp_iso'] = attrs['timestamp'].isoformat()
@@ -38,10 +27,28 @@ class RideRequestCreateSerializer(serializers.Serializer):
         return value
 
 
+class OfferResponseSerializer(serializers.Serializer):
+    ride_id = serializers.UUIDField(required=True)
+    driver_id = serializers.UUIDField(required=True)
+    action = serializers.ChoiceField(choices=['accept', 'decline'])
+
+
+class DriverLifecycleActionSerializer(serializers.Serializer):
+    ride_id = serializers.UUIDField(required=True)
+    driver_id = serializers.UUIDField(required=True)
+
+
+class StartTripSerializer(serializers.Serializer):
+    ride_id = serializers.UUIDField(required=True)
+    driver_id = serializers.UUIDField(required=True)
+    otp = serializers.CharField(max_length=4, min_length=4)
+
+
 class RideRequestDetailSerializer(serializers.ModelSerializer):
     pickup_coordinates = serializers.SerializerMethodField()
     dropoff_coordinates = serializers.SerializerMethodField()
     driver_name = serializers.CharField(source='driver.name', read_only=True, default=None)
+    offered_driver_name = serializers.CharField(source='offered_driver.name', read_only=True, default=None)
 
     class Meta:
         model = RideRequest
@@ -50,7 +57,12 @@ class RideRequestDetailSerializer(serializers.ModelSerializer):
             'rider',
             'driver',
             'driver_name',
+            'offered_driver',
+            'offered_driver_name',
             'status',
+            'otp',
+            'distance_km',
+            'fare_amount',
             'pickup_coordinates',
             'dropoff_coordinates',
             'created_at',

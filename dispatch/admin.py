@@ -16,11 +16,7 @@ class DriverLocationAdmin(admin.GISModelAdmin):
     list_filter = ('driver', 'recorded_at')
     search_fields = ('driver__name',)
     readonly_fields = ('id', 'recorded_at')
-    gis_widget_kwargs = {
-        'attrs': {
-            'default_zoom': 13,
-        }
-    }
+    gis_widget_kwargs = {'attrs': {'default_zoom': 13}}
 
     @admin.display(description='Coordinates (Lat, Lon)')
     def get_coordinates(self, obj):
@@ -36,12 +32,8 @@ class RiderAdmin(admin.ModelAdmin):
 
 @admin.register(RideRequest)
 class RideRequestAdmin(admin.GISModelAdmin):
-    list_display = ('id', 'rider', 'driver', 'status', 'created_at')
+    list_display = ('id', 'rider', 'driver', 'offered_driver', 'status', 'otp', 'fare_amount', 'created_at')
     list_filter = ('status', 'created_at')
-    search_fields = ('rider__name', 'driver__name', 'id')
+    search_fields = ('rider__name', 'driver__name', 'id', 'otp')
     readonly_fields = ('id', 'created_at', 'updated_at')
-    gis_widget_kwargs = {
-        'attrs': {
-            'default_zoom': 13,
-        }
-    }
+    gis_widget_kwargs = {'attrs': {'default_zoom': 13}}

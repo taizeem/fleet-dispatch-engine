@@ -1,5 +1,8 @@
+import json
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.db import transaction
 from django.contrib.gis.measure import D
 from django.contrib.gis.db.models.functions import Distance
@@ -15,80 +18,133 @@ logger = logging.getLogger(__name__)
 class DispatcherService:
     DISPATCH_RADIUS_KM = 3.0
     CANDIDATE_LIMIT = 5
+    OFFER_TIMEOUT_SECONDS = 15
 
     def __init__(self):
         self.redis_service = RedisClientService.get_instance()
+        self.channel_layer = get_channel_layer()
 
     def dispatch_ride(self, ride_request_id: str) -> Tuple[RideRequest, Optional[Driver], str]:
-        """
-        Attempts to match and assign the closest online driver to a RideRequest.
-        Returns: (ride_request, assigned_driver, strategy_used)
-        """
         ride = RideRequest.objects.select_related('rider').get(id=ride_request_id)
-        if ride.status != RideRequestStatus.REQUESTED:
+        if ride.status not in (RideRequestStatus.REQUESTED, RideRequestStatus.OFFERED):
             return ride, ride.driver, 'ALREADY_ASSIGNED'
 
         pickup_point = ride.pickup_location
         pickup_lon = pickup_point.x
         pickup_lat = pickup_point.y
 
-        # Strategy 1: Sub-millisecond lookup via Redis GEO
+        # 1. Fetch nearby candidates from Redis GEO
+        candidates: List[dict] = []
         try:
-            nearby_candidates = self.redis_service.find_nearby_drivers(
+            candidates = self.redis_service.find_nearby_drivers(
                 longitude=pickup_lon,
                 latitude=pickup_lat,
                 radius_km=self.DISPATCH_RADIUS_KM,
                 limit=self.CANDIDATE_LIMIT,
             )
-            assigned_driver = self._assign_from_redis_candidates(ride, nearby_candidates)
-            if assigned_driver:
-                return ride, assigned_driver, 'REDIS_GEO'
         except (redis.RedisError, Exception) as exc:
-            logger.warning('Redis geospatial lookup failed (%s). Falling back to PostGIS spatial query.', exc)
+            logger.warning('Redis geospatial search failed: %s', exc)
 
-        # Strategy 2: Resilient PostGIS Fallback
-        assigned_driver = self._assign_from_postgis_fallback(ride, pickup_point)
-        if assigned_driver:
-            return ride, assigned_driver, 'POSTGIS_FALLBACK'
-
-        return ride, None, 'NO_DRIVER_FOUND'
-
-    def _assign_from_redis_candidates(self, ride: RideRequest, candidates: list) -> Optional[Driver]:
+        # 2. Fallback to PostGIS if Redis returned zero candidates or threw error
         if not candidates:
-            return None
+            return self._dispatch_postgis_fallback(ride, pickup_point)
 
+        # 3. Filter candidates to ensure they are confirmed ONLINE in database
         candidate_ids = [c['driver_id'] for c in candidates]
+        online_driver_ids = set(
+            Driver.objects.filter(id__in=candidate_ids, status=DriverStatus.ONLINE)
+            .values_list('id', flat=True)
+        )
+        online_candidates = [c for c in candidates if uuid_or_str(c['driver_id']) in online_driver_ids]
+
+        if not online_candidates:
+            return self._dispatch_postgis_fallback(ride, pickup_point)
+
+        # 4. Initiate 15-second Offer Cascade starting with the closest candidate
+        return self._offer_to_next_candidate(ride, online_candidates, current_index=0)
+
+    def _offer_to_next_candidate(self, ride: RideRequest, candidates: list, current_index: int) -> Tuple[RideRequest, Optional[Driver], str]:
+        if current_index >= len(candidates):
+            ride.status = RideRequestStatus.REQUESTED
+            ride.offered_driver = None
+            ride.save(update_fields=['status', 'offered_driver', 'updated_at'])
+            return ride, None, 'NO_DRIVER_FOUND'
+
+        target_candidate = candidates[current_index]
+        target_driver_id = str(target_candidate['driver_id'])
+
+        driver = Driver.objects.filter(id=target_driver_id, status=DriverStatus.ONLINE).first()
+        if not driver:
+            # Skip driver if they went offline/busy between search and offer
+            return self._offer_to_next_candidate(ride, candidates, current_index + 1)
 
         with transaction.atomic():
-            # Query and lock available online drivers matching Redis candidates
-            online_drivers = {
-                str(d.id): d
-                for d in Driver.objects.select_for_update()
-                .filter(id__in=candidate_ids, status=DriverStatus.ONLINE)
-            }
+            ride.offered_driver = driver
+            ride.status = RideRequestStatus.OFFERED
+            ride.save(update_fields=['offered_driver', 'status', 'updated_at'])
 
-            # Pick the closest candidate that is confirmed online
-            for candidate in candidates:
-                cand_id = candidate['driver_id']
-                if cand_id in online_drivers:
-                    matched_driver = online_drivers[cand_id]
-                    matched_driver.status = DriverStatus.BUSY
-                    matched_driver.save(update_fields=['status', 'updated_at'])
+        # Store offer state in Redis with a 15-second TTL
+        offer_key = f'ride:{ride.id}:offer'
+        offer_data = {
+            'ride_id': str(ride.id),
+            'driver_id': target_driver_id,
+            'current_index': current_index,
+            'candidates': candidates,
+        }
+        self.redis_service.client.setex(
+            offer_key,
+            self.OFFER_TIMEOUT_SECONDS,
+            json.dumps(offer_data),
+        )
 
-                    ride.driver = matched_driver
-                    ride.status = RideRequestStatus.ASSIGNED
-                    ride.save(update_fields=['driver', 'status', 'updated_at'])
-                    return matched_driver
+        # Broadcast offer event to the Driver's WebSocket channel group
+        self._broadcast_driver_offer(ride, driver, target_candidate['distance_km'])
 
-        return None
+        return ride, driver, 'OFFER_SENT'
 
-    def _assign_from_postgis_fallback(self, ride: RideRequest, pickup_point: Point) -> Optional[Driver]:
+    def cascade_next_driver(self, ride_request_id: str) -> Tuple[RideRequest, Optional[Driver], str]:
         """
-        Spatial fallback in PostGIS: finds the closest online driver based on their most recent location ping.
+        Called when a driver explicitly declines or an offer times out.
         """
+        ride = RideRequest.objects.get(id=ride_request_id)
+        if ride.status != RideRequestStatus.OFFERED:
+            return ride, ride.driver, 'ALREADY_HANDLED'
+
+        offer_key = f'ride:{ride.id}:offer'
+        raw_offer = self.redis_service.client.get(offer_key)
+
+        if not raw_offer:
+            # Fallback to fresh dispatch if offer cache was evicted
+            return self.dispatch_ride(str(ride.id))
+
+        offer_data = json.loads(raw_offer)
+        candidates = offer_data.get('candidates', [])
+        next_index = offer_data.get('current_index', 0) + 1
+
+        return self._offer_to_next_candidate(ride, candidates, next_index)
+
+    def _broadcast_driver_offer(self, ride: RideRequest, driver: Driver, distance_km: float):
+        group_name = f'driver_{driver.id}'
+        message = {
+            'type': 'driver_offer',
+            'data': {
+                'type': 'ride_offer',
+                'ride_id': str(ride.id),
+                'rider_name': ride.rider.name,
+                'pickup_coordinates': {'lat': ride.pickup_location.y, 'lon': ride.pickup_location.x},
+                'dropoff_coordinates': {'lat': ride.dropoff_location.y, 'lon': ride.dropoff_location.x},
+                'distance_to_pickup_km': round(distance_km, 2),
+                'timeout_seconds': self.OFFER_TIMEOUT_SECONDS,
+            },
+        }
+        try:
+            async_to_sync(self.channel_layer.group_send)(group_name, message)
+        except Exception as e:
+            logger.error('Failed to broadcast offer to driver %s: %s', driver.id, e)
+
+    def _dispatch_postgis_fallback(self, ride: RideRequest, pickup_point: Point) -> Tuple[RideRequest, Optional[Driver], str]:
         with transaction.atomic():
-            # Subquery the closest online driver whose latest ping is within 3km
-            nearby_driver_location = (
+            nearby_loc = (
                 DriverLocation.objects.filter(
                     driver__status=DriverStatus.ONLINE,
                     location__distance_lte=(pickup_point, D(km=self.DISPATCH_RADIUS_KM)),
@@ -99,21 +155,25 @@ class DispatcherService:
                 .first()
             )
 
-            if nearby_driver_location:
-                matched_driver = nearby_driver_location.driver
-                # Lock driver
-                driver_to_lock = (
-                    Driver.objects.select_for_update()
-                    .filter(id=matched_driver.id, status=DriverStatus.ONLINE)
-                    .first()
-                )
-                if driver_to_lock:
-                    driver_to_lock.status = DriverStatus.BUSY
-                    driver_to_lock.save(update_fields=['status', 'updated_at'])
+            if nearby_loc:
+                matched_driver = nearby_loc.driver
+                matched_driver.status = DriverStatus.BUSY
+                matched_driver.save(update_fields=['status', 'updated_at'])
 
-                    ride.driver = driver_to_lock
-                    ride.status = RideRequestStatus.ASSIGNED
-                    ride.save(update_fields=['driver', 'status', 'updated_at'])
-                    return driver_to_lock
+                ride.driver = matched_driver
+                ride.offered_driver = None
+                ride.status = RideRequestStatus.ACCEPTED
+                ride.save(update_fields=['driver', 'offered_driver', 'status', 'updated_at'])
+                return ride, matched_driver, 'POSTGIS_FALLBACK'
 
-        return None
+        ride.status = RideRequestStatus.REQUESTED
+        ride.save(update_fields=['status', 'updated_at'])
+        return ride, None, 'NO_DRIVER_FOUND'
+
+
+def uuid_or_str(val):
+    import uuid
+    try:
+        return uuid.UUID(str(val))
+    except (ValueError, AttributeError):
+        return val

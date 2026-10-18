@@ -1,6 +1,11 @@
 import uuid
+import random
 from django.contrib.gis.db import models
 from django.utils import timezone
+
+
+def generate_otp() -> str:
+    return f'{random.randint(1000, 9999)}'
 
 
 class DriverStatus(models.TextChoices):
@@ -11,7 +16,9 @@ class DriverStatus(models.TextChoices):
 
 class RideRequestStatus(models.TextChoices):
     REQUESTED = 'requested', 'Requested'
-    ASSIGNED = 'assigned', 'Assigned'
+    OFFERED = 'offered', 'Offered'
+    ACCEPTED = 'accepted', 'Accepted'
+    ARRIVED = 'arrived', 'Arrived'
     IN_PROGRESS = 'in_progress', 'In Progress'
     COMPLETED = 'completed', 'Completed'
     CANCELLED = 'cancelled', 'Cancelled'
@@ -86,6 +93,13 @@ class RideRequest(models.Model):
         on_delete=models.SET_NULL,
         related_name='assigned_rides',
     )
+    offered_driver = models.ForeignKey(
+        Driver,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='pending_offers',
+    )
     pickup_location = models.PointField(srid=4326, spatial_index=True)
     dropoff_location = models.PointField(srid=4326, spatial_index=True)
     status = models.CharField(
@@ -94,6 +108,9 @@ class RideRequest(models.Model):
         default=RideRequestStatus.REQUESTED,
         db_index=True,
     )
+    otp = models.CharField(max_length=4, default=generate_otp)
+    distance_km = models.FloatField(null=True, blank=True)
+    fare_amount = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
