@@ -12,7 +12,7 @@ from .views import (
 app_name = 'dispatch'
 
 urlpatterns = [
-    path('dashboard/',DashboardView.as_view(), name='dashboard'),
+    path('dashboard/', DashboardView.as_view(), name='dashboard'),
     path('api/v1/drivers/location-ping/', DriverLocationPingView.as_view(), name='driver-location-ping'),
     path('api/v1/rides/request/', RideRequestCreateView.as_view(), name='ride-request-create'),
     path('api/v1/rides/offer-response/', OfferResponseView.as_view(), name='ride-offer-response'),
