@@ -15,6 +15,7 @@ dependencies = [
     "channels-redis>=4.2.0",
     "daphne>=4.1.0",
     "python-dotenv>=1.2.4",
+    "websockets>=16.1.1",
 ]
 
 [project.optional-dependencies]

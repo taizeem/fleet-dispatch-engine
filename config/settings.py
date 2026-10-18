@@ -106,9 +106,9 @@ REDIS_DRIVER_KEY_PREFIX = 'driver:'
 # Redis Channel Layer for Django Channels WebSockets
 CHANNEL_LAYERS = {
     'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'BACKEND': 'channels_redis.pubsub.RedisPubSubChannelLayer',
         'CONFIG': {
-            'hosts': [(REDIS_HOST, REDIS_PORT)],
+            'hosts': [f'redis://{REDIS_HOST}:{REDIS_PORT}/0'],
         },
     },
 }
